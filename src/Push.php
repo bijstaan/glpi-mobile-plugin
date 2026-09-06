@@ -114,25 +114,58 @@ class Push extends CommonDBTM
     /** Queue a notification for a user, skipping the actor + undeliverable users. */
     public static function enqueue(int $users_id, string $title, string $body, int $ticket_id): void
     {
-        /** @var \DBmysql $DB */
-        global $DB;
-
-        if ($users_id <= 0 || $ticket_id <= 0) {
+        if ($ticket_id <= 0) {
             return;
         }
         if ($users_id === (int) Session::getLoginUserID()) {
             return; // don't notify whoever caused the event
         }
+        self::insertRow($users_id, $title, $body, $ticket_id, null);
+    }
+
+    /**
+     * Queue a notification that deep-links to an app route instead of a
+     * ticket (e.g. `/alerts/42` from the glpi-signal channel). Unlike
+     * enqueue(), the current session user is NOT skipped — a page must reach
+     * its target even when the actor is the target (test pages, self-ack).
+     *
+     * @param string $route app route path, must start with '/'
+     * @return bool true when a queue row was written; false when the input is
+     *              invalid or the user is undeliverable (inactive/deleted, or
+     *              no registered device)
+     */
+    public static function enqueueRoute(int $users_id, string $title, string $body, string $route): bool
+    {
+        if ($route === '' || $route[0] !== '/') {
+            return false;
+        }
+        return self::insertRow($users_id, $title, $body, 0, $route);
+    }
+
+    /** Shared queue writer behind enqueue()/enqueueRoute(). */
+    private static function insertRow(int $users_id, string $title, string $body, int $ticket_id, ?string $route): bool
+    {
+        /** @var \DBmysql $DB */
+        global $DB;
+
+        if ($users_id <= 0) {
+            return false;
+        }
         if (!self::userDeliverable($users_id)) {
-            return; // inactive/deleted, or no registered device
+            return false; // inactive/deleted, or no registered device
         }
 
-        $DB->insert('glpi_plugin_glpimobile_notifqueue', [
+        $data = ['ticket_id' => $ticket_id];
+        if ($route !== null) {
+            $data['route'] = $route;
+        }
+
+        return (bool) $DB->insert('glpi_plugin_glpimobile_notifqueue', [
             'users_id'        => $users_id,
             'title'           => $title,
             'body'            => $body,
             'ticket_id'       => $ticket_id,
-            'data_json'       => json_encode(['ticket_id' => $ticket_id]),
+            'data_json'       => json_encode($data),
             'state'           => 0,
             'attempts'        => 0,
             'next_attempt_at' => 0,
@@ -175,11 +208,18 @@ class Push extends CommonDBTM
         ]);
 
         foreach ($rows as $row) {
-            $payload = json_encode([
+            $fields = [
                 'ticket_id' => (int) $row['ticket_id'],
                 'title'     => $row['title'],
                 'body'      => $row['body'],
-            ]);
+            ];
+            // Deep-link route (nullable): rides along in data_json, forwarded
+            // verbatim so the app can navigate to non-ticket screens.
+            $data = json_decode((string) ($row['data_json'] ?? ''), true);
+            if (is_array($data) && isset($data['route']) && is_string($data['route'])) {
+                $fields['route'] = $data['route'];
+            }
+            $payload = json_encode($fields);
 
             $anyDevice = false;
             $delivered = false;

@@ -6,6 +6,47 @@ All notable changes to this plugin are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`GET /catalog`** — one level of the service-catalog category tree, with the
+  entity's own display settings: *Expand categories in the service catalog*
+  (section vs row), the default sort strategy, the breadcrumb, and `kind` for
+  each entry (`form`, `category`, `kb`). Read from the same places
+  `ServiceCatalog\ItemsController` reads them, including the rule that a
+  search spans every category.
+- **`GET /illustrations?ids=`** — GLPI's own catalog artwork as standalone SVG,
+  lifted out of the 1.8 MB sprite the web page references by fragment, with the
+  CSS custom properties in its fills resolved to the colours a browser paints.
+
+### Fixed
+
+- The form list called `SessionInfo::getCurrentSessionInfo()`, which does not
+  exist. Because the catalog lookup is wrapped in a catch-all, every request
+  fell through to the direct-query fallback instead: the flat list worked, and
+  the service catalog it was supposed to read was never consulted. It is
+  `Session::getCurrentSessionInfo()`.
+
+## [0.2.0] — 2026-08-22
+
+No schema changes; upgrading is just activating the new version.
+
+### Added
+
+- **Capabilities endpoint** — `GET /GlpiMobile/capabilities` (OAuth) returns a
+  per-user map of mobile-facing features contributed by other plugins through
+  the new `glpimobile_capabilities` hook (see the README for the contract).
+  Only active plugins are consulted; a contributor that throws or returns a
+  malformed shape is logged and skipped.
+- **Deep-link pushes.** Queued notifications may now carry a nullable `route`
+  (an app route path like `/alerts/42`) in `data_json`, forwarded verbatim in
+  the push payload. New `Push::enqueueRoute()` queues a route-addressed push
+  with no ticket bound; `Push::enqueue()` is unchanged for existing callers.
+- **glpi-signal paging channel.** When glpi-signal is active, a
+  `glpimobile_push` channel is registered on its `glpisignal_channels` hook:
+  an escalation step routed to it pushes the alert to the target user's
+  devices, deep-linking to `/alerts/<id>`. Fully optional — without
+  glpi-signal the plugin runs standalone as before.
+
 ## [0.1.0] — 2026-08-08
 
 First public release. Requires GLPI 11.0+. Pairs with

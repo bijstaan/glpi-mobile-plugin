@@ -11,6 +11,11 @@ use GlpiPlugin\Glpimobile\WebPush;
  * The OAuth client is confidential (authorization_code + refresh_token grants).
  * Its secret is generated + stored GLPIKey-encrypted by OAuthClient; the broker
  * decrypts it at runtime. We only stash the generated identifier in config.
+ *
+ * Upgrades run through this same function (GLPI's update flow re-invokes
+ * install), so every step below is idempotent. Version notes:
+ *  - 0.2.0: no schema change. The nullable deep-link `route` added to queued
+ *    notifications rides inside the existing free-form `data_json` TEXT column.
  */
 function plugin_glpimobile_install()
 {

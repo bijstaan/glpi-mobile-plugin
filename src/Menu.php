@@ -31,15 +31,13 @@ class Menu extends CommonGLPI
         return (bool) Session::haveRight('config', UPDATE);
     }
 
-    public static function getMenuContent()
-    {
-        if (!self::canView()) {
-            return false;
-        }
-        return [
-            'title' => self::getTypeName(),
-            'page'  => '/plugins/glpimobile/front/config.php',
-            'icon'  => self::getIcon(),
-        ];
-    }
+    /**
+     * No getMenuContent().
+     *
+     * This class supplies the plugin's name and icon; it deliberately does not
+     * register a Setup-menu entry. Setup > Plugins already links the settings
+     * page, and a menu row pointing at the same page is a duplicate — with
+     * several plugins installed, those duplicates are most of what is in the
+     * Setup menu.
+     */
 }

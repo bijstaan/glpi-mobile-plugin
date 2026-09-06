@@ -207,9 +207,55 @@ record can carry attachments.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/forms` | the catalog the signed-in user may answer |
+| `GET` | `/catalog` | one level of the category tree, with the entity's display settings |
+| `GET` | `/forms` | every form the signed-in user may answer, flat (pre-`/catalog` clients) |
 | `GET` | `/forms/{id}` | sections → questions, with dropdown options resolved server-side |
 | `POST` | `/forms/{id}/submit` | `{marker, answers: {question_id: value}}` |
+| `GET` | `/illustrations?ids=` | GLPI's own catalog artwork, as standalone SVG |
+
+`/catalog` takes `category` (0 = root), `filter`, `page` and `per_page`, and
+answers with the level's items plus the three things that decide how it should
+look — all read from where the web controller reads them, so the two cannot
+drift:
+
+```json
+{
+  "expand_categories": true,
+  "sort_strategy": "popularity",
+  "category_id": 5,
+  "ancestors": [{"id": 5, "name": "Accounts, Access & Identity"}],
+  "items": [
+    {"kind": "category", "id": 7, "name": "Access Requests", "description": "",
+     "illustration": "approve-requests", "pinned": false,
+     "children": [{"kind": "form", "id": 3, "name": "Access Request", "…": "…"}]},
+    {"kind": "kb", "id": 9, "name": "Password self-service", "…": "…"}
+  ],
+  "total": 2, "page": 1, "per_page": 100
+}
+```
+
+- **`expand_categories`** is the entity's *Expand categories in the service
+  catalog* setting, resolved through the inheritance chain by `Entity` rather
+  than read off the column (the stored value is usually "inherit"). True means
+  a category is drawn as a section with its forms already under it; false means
+  it is a row you open. The client renders; it does not decide.
+- **`sort_strategy`** is the entity default unless the caller names one. The
+  order in `items` is already correct — pinned first, then categories, then the
+  strategy — and a client that re-sorts will disagree with the portal.
+- **`filter`** searches *across* categories, so `category` is ignored when one
+  is given: somebody searching wants the form, not the folder. Same rule as the
+  web controller.
+- `kind` is `form`, `category` or `kb` — the three things GLPI's own catalog
+  lists side by side. Empty categories never appear.
+
+`/illustrations` exists because GLPI keeps that artwork in a single 1.8 MB SVG
+sprite referenced by fragment (`<use href="…#report-issue">`), which is no use
+to a client that has not got the file. Each requested symbol is lifted out as a
+standalone SVG with its own `viewBox`, and the CSS custom properties in its
+fills (`var(--glpi-illustrations-color, var(--…-header-dark, #2F3F64))`) are
+resolved to the literal a browser would paint on the default palette. Batched,
+because a catalog screen wants every icon it is about to draw. Custom uploaded
+illustrations are served too, if they are SVG.
 
 GLPI 11's Service Catalog is served only by session-authenticated Symfony *web*
 controllers, so there is no REST route for it. Submission calls GLPI's own
@@ -242,6 +288,59 @@ from the far side.
 | `GET` | `/asset/{itemtype}/{id}/itil` | tickets/changes/problems logged against an asset |
 | `GET` | `/record/{itemtype}/{id}/raw` | the raw DB row for an allow-listed itemtype — GLPI's Supplier/Contact schemas omit phone, email, website and address |
 
+### Capabilities
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/capabilities` | per-user map of mobile-facing features contributed by other plugins |
+
+The response is a JSON object keyed by contributing plugin directory (empty
+object `{}` when no active plugin contributes):
+
+```json
+{
+  "glpisignal": {
+    "version": "0.1.0",
+    "features": {"alerts": true, "ack": true, "oncall": false}
+  }
+}
+```
+
+The app calls this once per session and shows or hides whole feature areas
+accordingly. The endpoint requires normal OAuth authentication and always
+answers `200` once authenticated.
+
+#### The `glpimobile_capabilities` hook (contract for other plugins)
+
+A plugin advertises mobile-facing features by registering a callback in its
+`setup.php`:
+
+```php
+$PLUGIN_HOOKS['glpimobile_capabilities']['myplugin'] = function (): array {
+    return [
+        'version'  => PLUGIN_MYPLUGIN_VERSION,
+        'features' => [
+            'somefeature' => Session::haveRight('myplugin_thing', READ),
+        ],
+    ];
+};
+```
+
+Rules:
+
+- The callable takes **no arguments** and returns
+  `['version' => <plugin version string>, 'features' => [<feature name> => bool, ...]]`.
+- Feature booleans must be computed with the **current session's rights**
+  (`Session::haveRight`) — the map is per-user, and it is the contributor's job
+  to say what *this* user may use, not what the plugin can do in the abstract.
+- Only hooks of **active** plugins are consulted; a contributor that throws or
+  returns a malformed shape is logged (`files/_log/glpimobile.log`) and
+  skipped — it never breaks the response for the others.
+- Feature names are the contract with the app: pick stable, lowercase keys and
+  never reuse a name for something different. Removing a feature means
+  returning `false`, not dropping the key, until no supported app release
+  looks for it.
+
 ## Notifications: what triggers a push
 
 Hooked on `item_add`:
@@ -259,6 +358,37 @@ inactive users and users with no registered device are skipped. Delivery is
 queued, not inline, so a slow push server can't slow down GLPI: `Push::cronSend`
 drains the queue, dispatches per device, and prunes registrations the push
 server reports as gone (`404`/`410`).
+
+### The push payload's `route` field (contract with the app)
+
+Every delivered push payload carries `ticket_id`, `title` and `body`, plus an
+optional deep-link:
+
+- `route` *(string, optional)* — an app route path such as `/alerts/42`. When
+  present, tapping the notification navigates the app to that route; when
+  absent, the app falls back to `ticket_id` (`0` means "no ticket": open the
+  app's home screen).
+
+Server-side, `route` rides in the queue row's free-form `data_json` column —
+no schema difference from 0.1.0. Two enqueue entry points exist:
+
+- `Push::enqueue(int $users_id, string $title, string $body, int $ticket_id): void`
+  — ticket events; skips the acting user, requires a real ticket id.
+- `Push::enqueueRoute(int $users_id, string $title, string $body, string $route): bool`
+  — route-addressed notifications with no ticket (alerts, paging). Does **not**
+  skip the acting user (a page must reach its target even when the target
+  triggered it); returns `false` when the route doesn't start with `/` or the
+  user is undeliverable (inactive/deleted, or no registered device).
+
+### glpi-signal paging channel
+
+When the [glpi-signal](https://github.com/norsewave) plugin is active, this
+plugin registers a `glpimobile_push` channel on its `glpisignal_channels` hook
+(`SignalChannel`). An escalation step routed to it queues a push for the target
+user that deep-links to `/alerts/<alerts_id>`. The channel reports `skipped`
+when the user has no registered device, so the audit trail says why nothing
+buzzed. Without glpi-signal, nothing is registered and the plugin runs fully
+standalone.
 
 ## Development
 

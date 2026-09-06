@@ -8,15 +8,21 @@ use Glpi\Api\HL\RouteVersion;
 use Glpi\Form\AccessControl\FormAccessControlManager;
 use Glpi\Form\AccessControl\FormAccessParameters;
 use Glpi\Form\AnswersHandler\AnswersHandler;
+use Glpi\Form\Category;
 use Glpi\Form\Form;
 use Glpi\Form\Question;
 use Glpi\Form\Section;
 use Glpi\Form\ServiceCatalog\ItemRequest;
+use Glpi\Form\ServiceCatalog\Provider\CategoryProvider;
+use Glpi\Form\ServiceCatalog\ServiceCatalogCompositeInterface;
+use Glpi\Form\ServiceCatalog\ServiceCatalogItemInterface;
 use Glpi\Form\ServiceCatalog\ServiceCatalogManager;
+use Glpi\Form\ServiceCatalog\SortStrategy\SortStrategyEnum;
 use Glpi\Http\JSONResponse;
 use Glpi\Http\Request;
 use Glpi\Http\Response;
-use Glpi\Session\SessionInfo;
+use Entity;
+use KnowbaseItem;
 use Session;
 use Throwable;
 
@@ -75,6 +81,268 @@ final class FormController extends AbstractController
             }
         }
         return new JSONResponse($items, 200);
+    }
+
+    /**
+     * The service catalog as the web UI arranges it: one level of the category
+     * tree, with the entity's own display settings.
+     *
+     * The flat `/forms` list above is still what an older app asks for, and it
+     * is still the right answer for "show me everything I could file". It is
+     * the wrong answer for an instance that has organised its intake: GLPI 11
+     * puts forms in a category tree, and a catalog with forty forms in it is
+     * unusable as one list on a phone — which is exactly why the web UI stopped
+     * being one.
+     *
+     * Everything that decides *shape* is read from the same places the web
+     * controller reads it, so the two cannot drift:
+     *
+     *  - `category` (0 = the root level, as `ServiceCatalog\ItemsController`
+     *    defaults it) walks the tree; `ancestors` is the breadcrumb;
+     *  - a non-empty `filter` searches **across** categories, which is why the
+     *    category is dropped when one is given — the same rule, for the same
+     *    reason: somebody searching wants the form, not the folder;
+     *  - `expand_categories` is the entity's *Expand categories in the service
+     *    catalog* setting, inherited from the parent entity like every other
+     *    entity option. It is the difference between a category you tap into
+     *    and a category rendered as a section with its forms already under it;
+     *  - the sort strategy is the entity's default unless the caller names one.
+     *
+     * Empty categories never appear: `ServiceCatalogManager` drops them at both
+     * levels, and a folder that opens onto nothing is worse on a phone than in
+     * a browser, where at least the back button is free.
+     */
+    #[Route(path: '/catalog', methods: ['GET'])]
+    #[RouteVersion(introduced: '2.0')]
+    public function catalog(Request $request): Response
+    {
+        $uid = (int) Session::getLoginUserID();
+        if ($uid <= 0) {
+            return new JSONResponse(['error' => 'unauthenticated'], 401);
+        }
+
+        $filter = trim((string) self::param($request, 'filter', ''));
+        $page   = max(1, (int) self::param($request, 'page', 1));
+        // A phone scrolls; it does not page. The web's twelve-per-page exists
+        // to fill a grid, and asking somebody to tap "next" through a catalog
+        // is the friction the category tree was supposed to remove.
+        $per_page = max(1, min(200, (int) self::param($request, 'per_page', 100)));
+
+        $category_id = (int) self::param($request, 'category', 0);
+        if ($category_id > 0 && Category::getById($category_id) === false) {
+            return new JSONResponse(['error' => 'category_not_found'], 404);
+        }
+
+        $session = Session::getCurrentSessionInfo();
+        $entity  = Entity::getById($session?->getCurrentEntityId() ?? 0);
+
+        $sort = SortStrategyEnum::tryFrom((string) self::param($request, 'sort', ''));
+        if ($sort === null) {
+            $sort = $entity instanceof Entity
+                ? $entity->getServiceCatalogDefaultSortStrategy()
+                : SortStrategyEnum::POPULARITY;
+        }
+
+        $item_request = new ItemRequest(
+            access_parameters: self::accessParameters(),
+            filter: $filter,
+            // Null rather than 0: searching spans the whole tree.
+            category_id: $filter !== '' ? null : $category_id,
+            page: $page,
+            items_per_page: $per_page,
+            sort_strategy: $sort,
+        );
+
+        try {
+            $result = ServiceCatalogManager::getInstance()->getItems($item_request);
+        } catch (Throwable) {
+            // The catalog is the plugin's only view of intake; if it cannot be
+            // built, an empty level is a better answer than a 500, and the app
+            // falls back to the flat list.
+            return new JSONResponse([
+                'expand_categories' => false,
+                'sort_strategy'     => $sort->value,
+                'category_id'       => $category_id,
+                'ancestors'         => [],
+                'items'             => [],
+                'total'             => 0,
+                'page'              => $page,
+                'per_page'          => $per_page,
+            ], 200);
+        }
+
+        $items = [];
+        foreach (($result['items'] ?? []) as $item) {
+            $row = self::catalogItem($item);
+            if ($row !== null) {
+                $items[] = $row;
+            }
+        }
+
+        $ancestors = [];
+        if ($category_id > 0 && $filter === '') {
+            foreach ((new CategoryProvider())->getAncestors($item_request) as $ancestor) {
+                $ancestors[] = [
+                    'id'   => (int) ($ancestor['id'] ?? 0),
+                    'name' => (string) ($ancestor['name'] ?? ''),
+                ];
+            }
+        }
+
+        return new JSONResponse([
+            // The entity setting, resolved through the inheritance chain by
+            // Entity itself rather than read off the column — the stored value
+            // is usually "inherit".
+            'expand_categories' => $entity instanceof Entity
+                && $entity->shouldExpandCategoriesInServiceCatalog(),
+            'sort_strategy'     => $sort->value,
+            'category_id'       => $category_id,
+            'ancestors'         => $ancestors,
+            'items'             => $items,
+            'total'             => (int) ($result['total'] ?? count($items)),
+            'page'              => $page,
+            'per_page'          => $per_page,
+        ], 200);
+    }
+
+    /**
+     * The catalog's own artwork: `?ids=report-issue,request-service`.
+     *
+     * GLPI draws these from a 1.8 MB SVG sprite that the web page references
+     * with `<use href="…#id">`, which is no use to an app: it cannot resolve a
+     * fragment of a file it has not got, and it is not going to download the
+     * sprite to draw six icons. So each requested symbol is lifted out and
+     * returned as a standalone SVG.
+     *
+     * Two substitutions make them renderable outside a browser:
+     *
+     *  - the fills are CSS custom properties with literal fallbacks
+     *    (`var(--glpi-illustrations-color, var(--…-header-dark, #2F3F64))`).
+     *    Nothing outside a stylesheet resolves those, so the innermost literal
+     *    is written in — which is exactly what a browser paints on the default
+     *    palette;
+     *  - the symbol's own `viewBox` becomes the SVG's, or it would scale to
+     *    nothing.
+     *
+     * Batched on purpose: a catalog screen wants every icon it is about to
+     * draw, and one request for ten is the difference between a list that
+     * paints and a list that flickers in.
+     */
+    #[Route(path: '/illustrations', methods: ['GET'])]
+    #[RouteVersion(introduced: '2.0')]
+    public function illustrations(Request $request): Response
+    {
+        if ((int) Session::getLoginUserID() <= 0) {
+            return new JSONResponse(['error' => 'unauthenticated'], 401);
+        }
+
+        $raw = (string) self::param($request, 'ids', '');
+        $ids = array_values(array_unique(array_filter(
+            array_map('trim', explode(',', $raw)),
+            static fn(string $id): bool => $id !== ''
+                && preg_match('/^(custom:)?[A-Za-z0-9_.\- ]{1,190}$/', $id) === 1
+        )));
+
+        // A screenful, not a scrape of the whole sprite.
+        $ids = array_slice($ids, 0, 40);
+
+        $out = [];
+        foreach ($ids as $id) {
+            $svg = str_starts_with($id, 'custom:')
+                ? self::customIllustration(substr($id, 7))
+                : self::spriteIllustration($id);
+
+            if ($svg !== null) {
+                $out[$id] = $svg;
+            }
+        }
+
+        // Static artwork keyed by name: worth a day in a cache, and the app
+        // keeps them for the session anyway.
+        return new Response(
+            200,
+            [
+                'Content-Type'  => 'application/json',
+                'Cache-Control' => 'public, max-age=86400',
+            ],
+            json_encode((object) $out, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)
+        );
+    }
+
+    /** A native illustration, lifted out of GLPI's sprite. */
+    private static function spriteIllustration(string $id): ?string
+    {
+        $sprite = GLPI_ROOT
+            . '/public/lib/glpi-project/illustrations/glpi-illustrations-icons.svg';
+
+        if (!is_readable($sprite)) {
+            return null;
+        }
+
+        // Read once per request: a catalog screen asks for several icons, and
+        // re-reading 1.8 MB per icon would be the cost of this endpoint.
+        static $contents = null;
+        $contents ??= (string) file_get_contents($sprite);
+
+        // The id is already charset-checked; quoting it keeps a name with a dot
+        // in it from being a pattern.
+        $pattern = '/<symbol\b([^>]*\bid="' . preg_quote($id, '/') . '"[^>]*)>(.*?)<\/symbol>/s';
+        if (preg_match($pattern, $contents, $match) !== 1) {
+            return null;
+        }
+
+        $view_box = preg_match('/viewBox="([^"]+)"/', $match[1], $vb) === 1
+            ? $vb[1]
+            : '0 0 128 128';
+
+        return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' . $view_box . '"'
+            . ' fill="none">' . self::resolveCssVars($match[2]) . '</svg>';
+    }
+
+    /**
+     * An illustration an administrator uploaded.
+     *
+     * SVG only. A raster custom illustration is a perfectly good file and the
+     * wrong thing to put in a JSON map of markup; the app falls back to its own
+     * icon, which is what it does for anything it cannot draw.
+     */
+    private static function customIllustration(string $file): ?string
+    {
+        // Basename only: the id arrives from a client, and this reads a path.
+        $file = basename($file);
+        if ($file === '' || !str_ends_with(strtolower($file), '.svg')) {
+            return null;
+        }
+
+        $path = GLPI_PICTURE_DIR . '/illustrations/' . $file;
+        if (!is_readable($path)) {
+            return null;
+        }
+
+        return self::resolveCssVars((string) file_get_contents($path));
+    }
+
+    /**
+     * `var(--a, var(--b, #hex))` → `#hex`.
+     *
+     * The innermost fallback is what a browser paints when no palette
+     * overrides the property, which is the default GLPI look — and the one the
+     * app's own light theme was built against.
+     */
+    private static function resolveCssVars(string $svg): string
+    {
+        $previous = null;
+        // Nested twice in the sprite today; loop rather than assume the depth.
+        while ($previous !== $svg) {
+            $previous = $svg;
+            $svg = (string) preg_replace(
+                '/var\(\s*--[A-Za-z0-9-]+\s*,\s*([^(),]+?)\s*\)/',
+                '$1',
+                $svg
+            );
+        }
+
+        return $svg;
     }
 
     /** A form's full definition: sections, questions, options. */
@@ -212,6 +480,84 @@ final class FormController extends AbstractController
 
     // --- Helpers ---
 
+    /** Optional-parameter read: core's getParameter() warns on absent keys. */
+    private static function param(Request $request, string $name, mixed $default = null): mixed
+    {
+        return $request->hasParameter($name) ? $request->getParameter($name) : $default;
+    }
+
+    /**
+     * One catalog entry in the app's vocabulary.
+     *
+     * `kind` is what the app switches on, and it is the item's *role* in the
+     * catalog rather than its class: a form is filed, a category is descended
+     * into (or expanded in place), and a knowledge article is read. The web
+     * catalog lists all three in the same grid; leaving one out here would make
+     * the app's list quietly different from the one people are used to.
+     *
+     * Categories carry the single level of children the manager has already
+     * loaded — that is what the *expand* setting renders as a section, and
+     * re-fetching it per category would be a request per folder.
+     *
+     * @return array<string,mixed>|null null for a provider this app does not
+     *                                  know how to open, which is better
+     *                                  dropped than shown as a dead row
+     */
+    private static function catalogItem(ServiceCatalogItemInterface $item): ?array
+    {
+        $kind = match (true) {
+            $item instanceof Form          => 'form',
+            $item instanceof Category      => 'category',
+            $item instanceof KnowbaseItem  => 'kb',
+            default                        => null,
+        };
+
+        if ($kind === null) {
+            return null;
+        }
+
+        $row = [
+            'kind'         => $kind,
+            'id'           => (int) $item->getID(),
+            'name'         => $item->getServiceCatalogItemTitle(),
+            'description'  => self::plain($item->getServiceCatalogItemDescription()),
+            'illustration' => $item->getServiceCatalogItemIllustration(),
+            'pinned'       => $item->isServiceCatalogItemPinned(),
+        ];
+
+        if ($item instanceof ServiceCatalogCompositeInterface) {
+            $children = [];
+            foreach ($item->getChildren() as $child) {
+                $child_row = self::catalogItem($child);
+                if ($child_row !== null) {
+                    $children[] = $child_row;
+                }
+            }
+            $row['children'] = $children;
+        }
+
+        return $row;
+    }
+
+    /**
+     * Descriptions are TinyMCE HTML in GLPI and plain text in the app.
+     *
+     * Entities are decoded rather than left as they are: `&amp;` in a list row
+     * is the kind of thing that looks like a corrupt record to whoever reads
+     * it, and the app has no HTML renderer on this screen.
+     */
+    private static function plain(string $html): string
+    {
+        $text = html_entity_decode(
+            strip_tags(str_replace(['<br>', '<br/>', '<br />', '</p>'], ' ', $html)),
+            ENT_QUOTES | ENT_HTML5,
+            'UTF-8'
+        );
+
+        return trim((string) preg_replace('/\s+/u', ' ', $text));
+    }
+
+
     /** Question types whose answer GLPI expects as an integer id/enum. */
     private const INT_TYPES = [
         'urgency', 'request_type', 'number', 'item_dropdown', 'item', 'user_device',
@@ -265,7 +611,13 @@ final class FormController extends AbstractController
     private static function accessParameters(): FormAccessParameters
     {
         return new FormAccessParameters(
-            session_info: SessionInfo::getCurrentSessionInfo(),
+            // `Session::getCurrentSessionInfo()`, not `SessionInfo::` — the
+            // latter is not a thing, and because the catalog call above is
+            // wrapped in a catch-all, calling it silently sent every request
+            // down the fallback path instead: the flat list worked, and the
+            // service catalog it was supposed to be reading was never
+            // consulted at all.
+            session_info: Session::getCurrentSessionInfo(),
             url_parameters: [],
         );
     }

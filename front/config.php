@@ -73,7 +73,9 @@ if (!empty($_POST['test'])) {
     Html::back();
 }
 
-Html::header(Menu::getTypeName(), $_SERVER['PHP_SELF'], 'config', Menu::class);
+// Breadcrumbed under Plugins: this page is reached from the Plugins list
+// rather than from a Setup-menu entry of its own.
+Html::header(Menu::getTypeName(), $_SERVER['PHP_SELF'], 'config', 'plugins');
 
 $cfg = Config::getConfigurationValues($context, [
     'vapid_public_key', 'fcm_service_account', 'apns_p8',

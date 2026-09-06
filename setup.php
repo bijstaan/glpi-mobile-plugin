@@ -12,14 +12,15 @@
  */
 
 use GlpiPlugin\Glpimobile\AssetController;
-use GlpiPlugin\Glpimobile\Menu;
+use GlpiPlugin\Glpimobile\CapabilityController;
 use GlpiPlugin\Glpimobile\FormController;
 use GlpiPlugin\Glpimobile\ItilController;
 use GlpiPlugin\Glpimobile\PairController;
 use GlpiPlugin\Glpimobile\PlanningController;
 use GlpiPlugin\Glpimobile\QrTab;
+use GlpiPlugin\Glpimobile\SignalChannel;
 
-define('PLUGIN_GLPIMOBILE_VERSION', '0.1.0');
+define('PLUGIN_GLPIMOBILE_VERSION', '0.2.0');
 define('PLUGIN_GLPIMOBILE_MIN_GLPI', '11.0');
 
 // OAuth client config lives here (context) with the redirect scheme the app registers.
@@ -41,7 +42,15 @@ function plugin_init_glpimobile()
         ItilController::class,
         PlanningController::class,
         AssetController::class,
+        CapabilityController::class,
     ];
+
+    // Paging channel for glpi-signal's escalation engine. Guarded so this
+    // plugin stays standalone: without glpi-signal the hook consumer doesn't
+    // exist and SignalChannel (which implements its interface) is never loaded.
+    if (Plugin::isPluginActive('glpisignal')) {
+        $PLUGIN_HOOKS['glpisignal_channels']['glpimobile'] = [SignalChannel::class, 'all'];
+    }
 
     // Notification secrets stored GLPIKey-encrypted (decrypted on read). Only
     // true secrets are secured; APNs key/team/bundle ids are plain identifiers.
@@ -53,7 +62,8 @@ function plugin_init_glpimobile()
 
     // A persistent Setup-menu entry + the plugin-list gear both reach the
     // notification config page (so it's reachable after install).
-    $PLUGIN_HOOKS['menu_toadd']['glpimobile'] = ['config' => Menu::class];
+    // config_page only. A Setup-menu entry would be a second link to the page
+    // the Plugins list already points at.
     $PLUGIN_HOOKS['config_page']['glpimobile'] = 'front/config.php';
 
     // Ticket events → enqueue a push (drained + sent by cron). The callback gets
