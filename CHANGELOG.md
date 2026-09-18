@@ -26,6 +26,28 @@ All notable changes to this plugin are documented here. The format follows
   the service catalog it was supposed to read was never consulted. It is
   `Session::getCurrentSessionInfo()`.
 
+### Security
+
+- **A UnifiedPush endpoint is now checked before it is dialled.** The endpoint
+  arrives from the app and was stored and POSTed to verbatim, so any account
+  that could reach the pairing tab — which sits on Preference, so all of them —
+  could point the cron sender at whatever the GLPI host can reach: a cloud
+  metadata service, an internal admin port. Registration and send now both
+  require an `http(s)` URL that resolves outside the loopback, link-local,
+  private and reserved ranges, and curl is pinned to those two protocols with
+  redirects off so neither a `gopher://` endpoint nor a `302` can reach past
+  the address that was checked. `apns` and `fcm` endpoints are platform tokens
+  and are never dialled, so they are unaffected; the dev `connect_to` override
+  pins the destination itself and bypasses the check as before.
+- **Attachment upload and listing checked entity visibility, not rights.**
+  Both used `canViewItem()`, which is only the entity test, so a profile with
+  no rights over assets at all could read an asset's attachments — and upload
+  went on to create one without asking whether the caller may write. They now
+  use `can($id, READ)` and, for the upload, `canAddItem(Document::class)` —
+  the same gate GLPI applies through `Document_Item`, which already knows that
+  an asset demands UPDATE while a requester may attach to their own ticket
+  until it closes.
+
 ## [0.2.0] — 2026-08-22
 
 No schema changes; upgrading is just activating the new version.

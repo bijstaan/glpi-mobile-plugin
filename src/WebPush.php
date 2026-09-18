@@ -144,12 +144,101 @@ final class WebPush
     }
 
     /**
+     * Is this a UnifiedPush endpoint we are willing to POST to?
+     *
+     * The endpoint arrives from the app and is stored verbatim, so by the time
+     * it reaches curl it is attacker-controlled text: any authenticated user
+     * can register a device, and the QR pairing tab sits on Preference, which
+     * every account has. Left unchecked that turns the cron sender into a
+     * request forgery primitive pointed at whatever the GLPI host can reach —
+     * a cloud metadata service, an internal admin port — and the caller does
+     * not even need to see the response for that to be worth doing.
+     *
+     * So the destination has to be a real http(s) URL that resolves somewhere
+     * on the public internet. The scheme allowlist is what stops `gopher://`
+     * and friends being used to write arbitrary bytes at a TCP service; the
+     * address check is what stops the destination being *ours*.
+     *
+     * Checked again at send time rather than trusted from registration, since
+     * a name that resolved outward then can resolve inward now. A window does
+     * remain between this lookup and curl's own; closing it means resolving
+     * once and dialling the address we checked, which is a bigger change than
+     * this one and worth making if endpoints ever come from anywhere else.
+     */
+    public static function endpointIsAllowed(string $endpoint): bool
+    {
+        $parts = parse_url($endpoint);
+        if ($parts === false || !isset($parts['scheme'], $parts['host'])) {
+            return false;
+        }
+        if (!in_array(strtolower($parts['scheme']), ['https', 'http'], true)) {
+            return false;
+        }
+
+        $host = trim($parts['host'], '[]');
+
+        // A literal address is checked as it stands; a name is checked against
+        // every address it answers with, so a record pointing inward is caught
+        // whichever family it uses.
+        $addresses = filter_var($host, FILTER_VALIDATE_IP) !== false
+            ? [$host]
+            : self::resolve($host);
+
+        if ($addresses === []) {
+            return false;
+        }
+
+        foreach ($addresses as $address) {
+            // FILTER_FLAG_GLOBAL_RANGE covers loopback, link-local (169.254.x,
+            // which is where cloud metadata lives), the RFC1918 blocks, CGNAT,
+            // the v6 equivalents and the reserved ranges, in one predicate.
+            if (
+                filter_var(
+                    $address,
+                    FILTER_VALIDATE_IP,
+                    FILTER_FLAG_IPV4 | FILTER_FLAG_IPV6 | FILTER_FLAG_GLOBAL_RANGE
+                ) === false
+            ) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /** @return string[] every address a hostname answers with */
+    private static function resolve(string $host): array
+    {
+        $out = [];
+        foreach ([DNS_A, DNS_AAAA] as $type) {
+            foreach (@dns_get_record($host, $type) ?: [] as $record) {
+                $value = $record['ip'] ?? $record['ipv6'] ?? null;
+                if (is_string($value) && $value !== '') {
+                    $out[] = $value;
+                }
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * Send an encrypted Web Push to a UnifiedPush endpoint. Returns the HTTP
      * status code (or 0 on transport failure). 404/410 mean the subscription is
      * gone and the device row should be pruned.
+     *
+     * A dev `$connectTo` pins the connection to a host the operator named, so
+     * the destination is no longer the endpoint's to choose and the address
+     * check has nothing left to protect; without one the endpoint must pass
+     * {@see endpointIsAllowed()}.
      */
     public static function send(string $endpoint, string $p256dh, string $auth, string $payload, array $vapid, string $subject, ?string $connectTo = null): int
     {
+        $pinned = $connectTo !== null && $connectTo !== '';
+        if (!$pinned && !self::endpointIsAllowed($endpoint)) {
+            return 0;
+        }
+
         $body = self::encrypt($payload, $p256dh, $auth);
         $curl = curl_init($endpoint);
         $opts = [
@@ -158,6 +247,12 @@ final class WebPush
             CURLOPT_POSTFIELDS     => $body,
             CURLOPT_TIMEOUT        => 10,
             CURLOPT_CONNECTTIMEOUT => 5,
+            // Belt to the allowlist's braces, and the part that survives a
+            // future caller: curl otherwise honours every protocol it was
+            // built with, so a `gopher://` or `dict://` endpoint would be
+            // dialled as readily as an https one. A redirect must not be able
+            // to reach past the address we checked either.
+            CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_HTTPHEADER     => [
                 'Authorization: ' . self::vapidAuthorization($endpoint, $vapid, $subject),
                 'Content-Encoding: aes128gcm',
@@ -166,9 +261,17 @@ final class WebPush
                 'Urgency: normal',
             ],
         ];
+        // PROTOCOLS_STR wants curl 7.85 (PHP 8.2); the integer mask it replaced
+        // is deprecated but still the only option on an older build.
+        if (defined('CURLOPT_PROTOCOLS_STR')) {
+            $opts[CURLOPT_PROTOCOLS_STR] = 'https,http';
+        } else {
+            $opts[CURLOPT_PROTOCOLS] = CURLPROTO_HTTPS | CURLPROTO_HTTP;
+        }
+
         // Dev only: connect to a different host:port while keeping the URL, Host
         // and VAPID audience intact (e.g. emulator endpoint -> ntfy container).
-        if ($connectTo !== null && $connectTo !== '') {
+        if ($pinned) {
             $opts[CURLOPT_CONNECT_TO] = [$connectTo];
         }
         curl_setopt_array($curl, $opts);

@@ -248,6 +248,21 @@ final class PairController extends AbstractController
             return new JSONResponse(['error' => 'invalid_device'], 400);
         }
 
+        // For apns/fcm the endpoint is a platform token and never dialled. For
+        // unifiedpush it is a URL the cron sender will POST to, so it has to be
+        // one we would be willing to reach: see WebPush::endpointIsAllowed().
+        // The sender checks again — this is here so a bad endpoint is a 400 the
+        // app can show, rather than a registration that silently never delivers.
+        if ($transport === 'unifiedpush') {
+            $connectTo = (string) Config::getConfigurationValue(
+                PLUGIN_GLPIMOBILE_CONFIG_CONTEXT,
+                'dev_connect_to'
+            );
+            if ($connectTo === '' && !WebPush::endpointIsAllowed($endpoint)) {
+                return new JSONResponse(['error' => 'invalid_endpoint'], 400);
+            }
+        }
+
         $data = [
             'users_id'    => $uid,
             'transport'   => $transport,
@@ -310,8 +325,22 @@ final class PairController extends AbstractController
         }
         $ticketId = (int) $request->getAttribute('id');
         $ticket = new $class();
-        if (!$ticket->getFromDB($ticketId) || !$ticket->canViewItem()) {
+        // `can($id, READ)`, not `canViewItem()`: the latter is only the entity
+        // test, so on its own it would let anyone in the entity read an asset
+        // their profile grants no rights over at all.
+        if (!$ticket->getFromDB($ticketId) || !$ticket->can($ticketId, READ)) {
             return new JSONResponse(['error' => 'item_not_found'], 404);
+        }
+
+        // Attaching is a write, and reading the item is not permission to make
+        // one. `canAddItem()` is the same gate GLPI applies through
+        // Document_Item, and it already knows the difference between the two
+        // shapes this endpoint serves: on an asset or a contract it demands
+        // UPDATE, while CommonITILObject overrides it with the rule that lets a
+        // requester attach to their own ticket — and refuses once it is closed.
+        // Deciding that here by hand is how the two drift apart.
+        if (!$ticket->canAddItem(\Document::class)) {
+            return new JSONResponse(['error' => 'forbidden'], 403);
         }
 
         $marker = trim((string) $request->getParameter('marker'));
@@ -434,7 +463,9 @@ final class PairController extends AbstractController
         }
         $ticketId = (int) $request->getAttribute('id');
         $ticket = new $class();
-        if (!$ticket->getFromDB($ticketId) || !$ticket->canViewItem()) {
+        // Same correction as the upload: entity visibility alone would list an
+        // asset's attachments to a profile with no rights over assets.
+        if (!$ticket->getFromDB($ticketId) || !$ticket->can($ticketId, READ)) {
             return new JSONResponse(['error' => 'item_not_found'], 404);
         }
 
