@@ -15,7 +15,7 @@ verification and decided what to keep. But the characters in these files were,
 in the overwhelming majority, produced by a model rather than typed by a person.
 
 The same is true of the mobile app,
-[glpi-mobile](https://github.com/tankerkiller125/glpi-mobile-app).
+[glpi-mobile](https://github.com/bijstaan/glpi-mobile-app).
 
 ## What that means in practice
 
@@ -85,7 +85,7 @@ schemas imply — so every endpoint followed the same loop:
 
 ## Attribution and licensing
 
-The code is released under the [MIT License](LICENSE). AI-generated output does
+The code is released under the [GNU GPL v3 or later](LICENSE). AI-generated output does
 not change the license you receive or the obligations attached to it. The
 implementation was written against GLPI's public API and its own source, and no
 third-party code was knowingly copied into this repository.

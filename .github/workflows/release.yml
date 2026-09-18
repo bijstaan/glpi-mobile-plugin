@@ -109,6 +109,6 @@ jobs:
             Requires GLPI 11.0+ and PHP 8.2+. Checksums are in `SHA256SUMS.txt`.
 
             The matching app release is at
-            https://github.com/tankerkiller125/glpi-mobile-app/releases
+            https://github.com/bijstaan/glpi-mobile-app/releases
 
             ---

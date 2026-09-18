@@ -50,7 +50,7 @@ No schema changes; upgrading is just activating the new version.
 ## [0.1.0] — 2026-08-08
 
 First public release. Requires GLPI 11.0+. Pairs with
-[glpi-mobile](https://github.com/tankerkiller125/glpi-mobile-app) 0.1.0.
+[glpi-mobile](https://github.com/bijstaan/glpi-mobile-app) 0.1.0.
 
 ### Added
 
@@ -92,5 +92,5 @@ First public release. Requires GLPI 11.0+. Pairs with
 - No independent security review.
 - Tested only on GLPI 11.0.8 with MariaDB, in Docker.
 
-[Unreleased]: https://github.com/tankerkiller125/glpi-mobile-plugin/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/tankerkiller125/glpi-mobile-plugin/releases/tag/v0.1.0
+[Unreleased]: https://github.com/bijstaan/glpi-mobile-plugin/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/bijstaan/glpi-mobile-plugin/releases/tag/v0.1.0

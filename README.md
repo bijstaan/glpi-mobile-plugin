@@ -1,9 +1,9 @@
 # GLPI Mobile — companion plugin
 
-The server side of [**GLPI Mobile**](https://github.com/tankerkiller125/glpi-mobile-app),
+The server side of [**GLPI Mobile**](https://github.com/bijstaan/glpi-mobile-app),
 an offline-first mobile client for [GLPI](https://glpi-project.org/) 11.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 ![GLPI](https://img.shields.io/badge/GLPI-11.0%2B-orange)
 ![PHP](https://img.shields.io/badge/PHP-8.2%2B-777BB4)
 
@@ -51,7 +51,7 @@ ships with GLPI core.
 
 ```sh
 cd /var/www/glpi/plugins
-git clone https://github.com/tankerkiller125/glpi-mobile-plugin.git glpimobile
+git clone https://github.com/bijstaan/glpi-mobile-plugin.git glpimobile
 ```
 
 The directory **must** be named `glpimobile` — GLPI derives class and hook names
@@ -95,7 +95,7 @@ runtime from this server. In *Setup → GLPI Mobile*, provide:
 
 - **Client config** (public; the app fetches it): project id, app id, API key,
   sender id. Register an Android app in your Firebase project with the package
-  name `com.tankerkiller125.glpi`.
+  name `com.bijstaan.glpi`.
 - **Service account JSON** (secret, stored encrypted) — the sender credential.
 
 FCM is only offered to the app when all five are present.
@@ -103,7 +103,7 @@ FCM is only offered to the app when all five are present.
 ### APNs (iOS)
 
 Provide the `.p8` key (secret, encrypted), key id, team id and bundle id
-(`com.tankerkiller125.glpi`), and choose sandbox or production.
+(`com.bijstaan.glpi`), and choose sandbox or production.
 
 > **Not verified end to end.** The APNs sender is implemented and its ES256 JWT
 > signing is validated locally, but no Apple device or key was available to test
@@ -382,7 +382,7 @@ no schema difference from 0.1.0. Two enqueue entry points exist:
 
 ### glpi-signal paging channel
 
-When the [glpi-signal](https://github.com/norsewave) plugin is active, this
+When the [glpi-signal](https://github.com/bijstaan/glpi-signal) plugin is active, this
 plugin registers a `glpimobile_push` channel on its `glpisignal_channels` hook
 (`SignalChannel`). An escalation step routed to it queues a push for the target
 user that deep-links to `/alerts/<alerts_id>`. The channel reports `skipped`
@@ -492,7 +492,8 @@ changes, and say so if you used an AI assistant.
 
 ## License
 
-[MIT](LICENSE) © 2026 tankerkiller125.
+[GPL-3.0-or-later](LICENSE) © 2026 Bijstaan. This is a GLPI plugin, so it
+carries GLPI's licence.
 
 GLPI is a registered trademark of Teclib'. This plugin is independent and is not
 affiliated with or endorsed by Teclib' or the GLPI project.
