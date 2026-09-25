@@ -21,7 +21,7 @@ use Throwable;
 #[Route(path: '/GlpiMobile', tags: ['GlpiMobile'])]
 final class PairController extends AbstractController
 {
-    protected static function getRawKnownSchemas(): array
+    protected static function getRawKnownSchemas(string $api_version = ''): array
     {
         return [];
     }

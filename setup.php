@@ -21,7 +21,7 @@ use GlpiPlugin\Glpimobile\QrTab;
 use GlpiPlugin\Glpimobile\SignalChannel;
 
 define('PLUGIN_GLPIMOBILE_VERSION', '0.2.0');
-define('PLUGIN_GLPIMOBILE_MIN_GLPI', '11.0');
+define('PLUGIN_GLPIMOBILE_MIN_GLPI', '12.0');
 
 // OAuth client config lives here (context) with the redirect scheme the app registers.
 define('PLUGIN_GLPIMOBILE_CONFIG_CONTEXT', 'plugin:glpimobile');
